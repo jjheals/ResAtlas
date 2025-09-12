@@ -1,0 +1,15 @@
+# Venvs
+*venv
+*venv/
+
+# Caches
+*pycache*
+
+# Logs
+logs/
+
+# Data stores
+data/
+
+# Jupyter notebooks used for testing 
+*.ipynb
