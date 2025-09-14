@@ -4,6 +4,7 @@
 
 # Caches
 *pycache*
+*.pytest_cache
 
 # Logs
 logs/
