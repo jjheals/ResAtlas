@@ -1,2 +1,2 @@
 pandas
-git+https://github.com/jjheals/Py-Database-Connectors.git
+git+https://github.com/jjheals/Py-Database-Connector.git
