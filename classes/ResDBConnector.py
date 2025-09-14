@@ -6,6 +6,7 @@ from database_connectors import DatabaseConnector
 from database_connectors.classes.database_type import DatabaseType
 
 from utils import standardize_phone_number, standardize_date
+from .exceptions import InvalidTableNumberError
 
 
 class ResDBConnector(DatabaseConnector):
@@ -111,7 +112,6 @@ class ResDBConnector(DatabaseConnector):
         reservation_datetime:str,
         customer_email:str|None=None,
         date_created:str|None=None,
-        table_set_id:int|None=None,
         num_highchairs:int|None=None,
         notes:str|None=None
     ) -> int: 
@@ -189,26 +189,15 @@ class ResDBConnector(DatabaseConnector):
 
                 # Raise the exception
                 raise exc
-        
-        # Create a new Reservation for this customer depending on the given params
-        params_dict:dict = {
-            'customer_id': customer_id,
-            'reservation_datetime': reservation_datetime,
-            'num_people': num_people,
-            'num_highchairs': num_highchairs,
-            'date_created': date_created,
-            'notes': notes
-        }   
-
-        # Add other attributes if they are given
-        if table_set_id is not None and isinstance(table_set_id, int): 
-            params_dict['table_set_id'] = table_set_id
 
         # Insert the new row
         self.log_debug('new_reservation()', 'Creating new Reservation entry.')
+
+        # NOTE: omit "reservation_id" column
         self.new_table_row(
-            params_dict,
-            'Reservation'
+            [customer_id, num_people, reservation_datetime, date_created, num_highchairs, notes],
+            'Reservation',
+            cols=['customer_id', 'num_people', 'reservation_datetime', 'date_created', 'num_highchairs', 'notes']
         )
 
         # Retrieve the ID of the newly inserted reservation
@@ -278,6 +267,33 @@ class ResDBConnector(DatabaseConnector):
             return None
         
 
+    def update_reservation_tables(self, reservation_id:int, table_numbers:list[int], spacing:int=2) -> None: 
+        """Updates/creates an entry in [ReservationAtTable] to assign the given reservation to the given table(s).
+            - NOTE: if only assigning the reservation to a single table, then the given table_numbers should be a list with one value
+            - The given 'spacing' should be the time (in hours) allocated per reservation; defaults to 2 hours
+            - Raises OverlappingReservationError if there is already a reservation at one or more of the given table_numbers within "spacing" hours
+            - Raises ReservationNotFound if the given reservation_id does not exist
+            - Raises InvalidTableNumberError if any of the given table numbers is invalid
+        """
+
+        # Get the info for the given reservation
+        reservation_info:dict = self.get_reservation_info(reservation_id)
+
+        # Check that results were found
+        if not reservation_info: 
+            exc:Exception = sql.DataError('The given reservation ID "{reservation_id}" does not exist or there was an error fetching the info.')
+            self.log_error('update_reservation_table()', exc)
+            raise exc
+
+        # Check that all table numbers are valid 
+        if not self.check_table_numbers(table_numbers): 
+            self.log_warning('update_reservation_tables()', f'Given one or more invalid table numbers: {table_numbers}')
+            raise InvalidTableNumberError(table_numbers=table_numbers)
+
+        # Check that these tables are available at the given time
+
+
+
     # ---- Methods for retrieving filtered data ---- # 
 
     def get_reservations_for_date(self, date:dt.datetime) -> pd.DataFrame: 
@@ -294,3 +310,91 @@ class ResDBConnector(DatabaseConnector):
             reservations_df['reservation_datetime'].dt.date == date.date()
         ]
     
+
+    def get_reservation_info(self, reservation_id:int) -> dict: 
+        """Returns the entry in the [Reservation] table for the given 'reservation_id'."""
+        
+        # Get the row 
+        # NOTE: self.execute_one() fails silently and returns None if no results
+        results:list[tuple]|None = self.execute_one(
+            'SELECT * FROM Reservation WHERE reservation_id = ?',
+            params=[reservation_id],
+            commit=False,
+            fetch_results=True
+        )
+
+        # Return results
+        if results is not None: 
+            
+            # Create a dict to return
+            d:dict[str,str|int] = {}
+
+            for col,r in zip(self.get_table_columns('Reservation'), results[0]): 
+                d[col] = r
+            
+            # Return the dict
+            return d
+
+        # No results/error finding entry
+        else: return None
+    
+
+    def check_table_numbers(self, table_numbers:list[int]) -> bool: 
+        """Returns True if all the given table numbers are valid/exist, False otherwise."""
+
+        # Get all the table numbers from the _Table table
+        all_table_numbers:list[int] = self.execute_one(
+            'SELECT table_number FROM _Table',
+            fetch_results=True,
+            commit=False
+        )
+
+        # Check that all the given table numbers exist in the retrieved list
+        return set(table_numbers).issubset(all_table_numbers)
+    
+
+    def check_table_available(self, table_number:int, datetime:str, spacing:float) -> bool: 
+        """Returns True if the given table number is available at the given datetime (YYYY-MM-DD HH:MM:SS) with a spacing of 
+        'spacing' hours."""
+
+        # Init a cursor
+        self._ensure_cxn()
+        cursor:sql.Cursor = self.cxn.cursor()
+        
+        try: 
+            # Special-case spacing <= 0: treat as "at the exact same second"
+            if spacing <= 0:
+                cursor.execute(
+                    f"""
+                        SELECT 1
+                        FROM ReservationAtTable
+                        WHERE table_number = ?
+                        AND reservation_datetime = ?
+                        LIMIT 1
+                    """, 
+                    (table_number, datetime)
+                )
+            else:
+                # julianday() returns days; convert to hours and compare to 'spacing'
+                cursor.execute(
+                    f"""
+                        SELECT 1
+                        FROM ReservationAtTable
+                        WHERE table_number = ?
+                        AND ABS(julianday(reservation_datetime) - julianday(?)) * 24 < ?
+                        LIMIT 1
+                    """,
+                    (table_number, datetime, float(spacing))
+                )
+
+            # Return based on results
+            return cursor.fetchone() is None
+        
+        # Handle exceptions
+        except Exception as e: 
+            self.log_error('check_table_available()', e)
+            return False
+        
+        # Close cursor
+        finally: 
+            cursor.close()
