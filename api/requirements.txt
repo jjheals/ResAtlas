@@ -1,3 +1,7 @@
 pandas
 git+https://github.com/jjheals/Py-Database-Connector.git
 pytest
+flask
+flask_cors
+flask_compress
+gevent
