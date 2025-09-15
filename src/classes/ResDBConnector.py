@@ -6,12 +6,13 @@ from database_connectors import DatabaseConnector
 from database_connectors.classes.database_type import DatabaseType
 
 from utils import standardize_phone_number, standardize_date
-from .exceptions import InvalidTableNumberError
+from .exceptions import InvalidTableNumberError, OverlappingReservationsError
 
 
 class ResDBConnector(DatabaseConnector):
 
 
+    # ---- Constructor ---- # 
     def __init__(self, db_filepath:str): 
         super().__init__(
             DatabaseType.SQLITE,
@@ -274,6 +275,7 @@ class ResDBConnector(DatabaseConnector):
             - Raises OverlappingReservationError if there is already a reservation at one or more of the given table_numbers within "spacing" hours
             - Raises ReservationNotFound if the given reservation_id does not exist
             - Raises InvalidTableNumberError if any of the given table numbers is invalid
+            - Raises 'Exception' if there is an error when executing the INSERT query into [ReservationAtTable]
         """
 
         # Get the info for the given reservation
@@ -291,7 +293,30 @@ class ResDBConnector(DatabaseConnector):
             raise InvalidTableNumberError(table_numbers=table_numbers)
 
         # Check that these tables are available at the given time
+        for tn in table_numbers: 
+            if not self.check_table_available(tn, reservation_info['reservation_datetime'], spacing):
+                
+                # Create, log, and raise an OverlappingReservationsError
+                exc:Exception = OverlappingReservationsError(reservation_info['reservation_datetime'], tn, spacing)
+                self.log_error('update_reservation_table()', exc)
+                raise exc
 
+        # -- Valid tables if we make it here -- # 
+        # Create an entry for this reservation at each of these tables
+        try: 
+            self.execute_many(
+                """
+                INSERT INTO ReservationAtTable(reservation_id, reservation_datetime, table_number)
+                VALUES(?, ?, ?)
+                """,
+                [[reservation_id, reservation_info['reservation_datetime'], table_num] for table_num in table_numbers],
+                raise_on_error=True
+            )
+        
+        # NOTE: log and raise exceptions so we know if the insert failed on the frontend 
+        except Exception as e: 
+            self.log_error('update_reservation_tables()', e)
+            raise e
 
 
     # ---- Methods for retrieving filtered data ---- # 
