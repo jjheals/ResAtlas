@@ -1,97 +1,103 @@
+
+# Standard imports
 import os 
-import sqlite3 as sql
-import pandas as pd 
-from logging import Logger
+import logging 
 
-from classes import ResDBConnector
-from utils.general import setup_logger
+# Flask imports
+from flask import Flask, request, session, g
+from gevent.pywsgi import WSGIServer
+from flask_compress import Compress
+import secrets 
+from flask_cors import CORS  
 
-# ---- CONFIG ---- # 
+# Blueprints
+from .blueprints import data_bp
 
-# Flags for running/testing
-RESET_LOGS:bool = True      # Reset the "logs/" dir
-RESET_DB:bool = True        # Reset the DB (drop and recreate all tables) 
-
-# Standard paths
-LOGS_DIR:str = 'logs/'                                      # Path to dir containing logs
-DATABASE_FILE:str = 'data/test-database.db'                 # Path to the database SQLite file
-CREATE_TABLES_SQL_SCRIPT:str = 'sql/create_tables.sql'      # SQL script for creating tables
-DROP_TABLES_SQL_SCRIPT:str = 'sql/drop_tables.sql'          # SQL script for dropping existing tables
-
-DUMMY_DATA_CSV:str = 'data/test-data/dummy-reservations.csv'    # CSV file containing dummy data for testing purposes
-DB_AS_CSVS_DIR:str = 'data/test-data/db-as-csvs/'               # Dir to dump the DB as CSVs for inspecting and testing
+# Object and util imports
+from .classes import ResDBConnector 
+from .utils import setup_logger
 
 
-# ---- SETUP ---- #
+# ---- CONFIG/SETUP ---- # 
 
-# Reset logs if configured
-if RESET_LOGS: 
-    for filename in os.listdir(LOGS_DIR): 
-        os.remove(os.path.join(LOGS_DIR, filename))
+# Vars
+FLASK_LOG_FILE:str = '../logs/flask.log'
+DB_FILE:str = '../data/database.db'
 
-# Init db connection
-db_connector:ResDBConnector = ResDBConnector(DATABASE_FILE)
+# Init a logger
+logger:logging.Logger = setup_logger('../logs/flask.log', 'flask_logger')
 
-# Init a logger for this script
-logger:Logger = setup_logger(
-    os.path.join(LOGS_DIR, 'main-py.log'),
-    'main-py-logger'
-)
+# Init the flask app
+logger.debug('Initializing flask app.')
 
+app = Flask(__name__)
+compress = Compress()
+compress.init_app(app)
 
-# Reset the DB if configured
-if RESET_DB: 
-    
-    # Init a cursor
-    cursor:sql.Cursor = db_connector.cxn.cursor()
+# Init CORS 
+logger.debug('Configuring CORS.')
+CORS(
+    app, 
+    origins='127.0.0.1',
+    allow_headers=['Content-Type'],
+    supports_credentials=True
+)  
 
-    # Drop existing tables
-    logger.debug('Dropping existing tables.')
-    with open(DROP_TABLES_SQL_SCRIPT, 'r') as sql_script: 
-        cursor.executescript(sql_script.read())
-        db_connector.cxn.commit()
+# Define the headers for the response that are the same no matter what the response is 
+response_headers:dict[str, str] = {
+    'Access-Control-Allow-Origin': '127.0.0.1',
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Headers': 'Content-Type'
+}
 
-    # Create new tables
-    logger.debug('Creating new tables.')
-    with open(CREATE_TABLES_SQL_SCRIPT, 'r') as sql_script: 
-        cursor:sql.Cursor = db_connector.cxn.cursor()
-        cursor.executescript(sql_script.read())
-        db_connector.cxn.commit()
+# Add DB connector to app for persistent access across blueprints
+app.db_connector = ResDBConnector(DB_FILE)
 
-    # Close cursor
-    cursor.close()
+# Logging and init db cxn before requests
+@app.before_request
+def before_request():
 
-
-# ---- ADDING/CHECKING DUMMY DATA ---- # 
-
-# Load dummy data
-res_data_df:pd.DataFrame = pd.read_csv(DUMMY_DATA_CSV)
-
-# Create new entries for each of the reservations
-logger.debug('Creating new Reservation entries')
-
-for idx,row in res_data_df.iterrows(): 
+    # Log incomming request
     try: 
-        db_connector.new_reservation(
-            row['first_name'],
-            row['last_name'],
-            row['phone_number'],
-            row['num_people'],
-            row['reservation_datetime'],
-            customer_email=row['email'],
-            date_created=row['date_created'],
-            num_highchairs=row['num_highchairs'],
-            notes=row['notes']
-        )
+        logger.info(f"\n\033[92mINCOMING request: METHOD = {request.method}, PATH = {request.path}")
+        logger.debug(f'Headers: {request.headers()}')
+        
+        # Log body or params based on req type
+        match(request.method): 
+            case 'POST': 
+                logger.info(f'Request body: {request.get_json()}')
+            case 'GET': 
+                logger.info(f'Request args: {request.args}')
+            case _: 
+                pass
     except Exception as e: 
-        logger.error(f'Error adding reservation (idx = {idx})', exc_info=e)
+        logger.error('Error from incoming connection.', exc_info=e)
 
-# Pull DB as CSVs to inspect
-print(db_connector.get_all_table_names())
+# Logging for after requests and adding CORs headers
+@app.after_request
+def after_request(response):
+    #response.set_cookie('session', value=session['authenticated'], samesite='None', secure=False)
+    for k,v in response_headers.items(): response.headers[k] = v
+    
+    print(f"\n\033[94mOUTGOING response: \n\n\t\033[0m{request.method} {request.path}\n\tAuthenticated: {session.get('authenticated')}\n")
+    print(response.headers)
 
-logger.debug(f'Pulling DB as CSVs to "{DB_AS_CSVS_DIR}"')
-db_connector.db_as_csvs(DB_AS_CSVS_DIR)
+    return response 
 
-# Done
-logger.info('DONE.')
-db_connector.cxn.close()
+
+# -- Endpoints -- #
+print(f'\033[0m[{now()}] \033[94mRegistering endpoints\033[0m')
+
+app.register_blueprint(homepage_bp)
+app.register_blueprint(data_bp)
+app.register_blueprint(authentication_bp)
+
+
+# -- Debug print -- #
+print(f'\033[0m[{now()}] \033[92mFlask app running.\033[0m')
+
+
+# -- Run -- #
+if __name__ == '__main__':
+    http_server = WSGIServer(('0.0.0.0', config['backend-port']), app)
+    http_server.serve_forever()
