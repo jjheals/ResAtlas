@@ -4,100 +4,78 @@ import os
 import logging 
 
 # Flask imports
-from flask import Flask, request, session, g
+from flask import Flask, request, abort
 from gevent.pywsgi import WSGIServer
-from flask_compress import Compress
-import secrets 
-from flask_cors import CORS  
+from configparser import ConfigParser
 
 # Blueprints
-from .blueprints import data_bp
+from blueprints import data_bp
 
 # Object and util imports
-from .classes import ResDBConnector 
-from .utils import setup_logger
+from classes import ResDBConnector 
+from utils import setup_logger
+from hooks import create_app
 
 
-# ---- CONFIG/SETUP ---- # 
+# ---- CONFIG ---- # 
 
-# Vars
-FLASK_LOG_FILE:str = '../logs/flask.log'
-DB_FILE:str = '../data/database.db'
+# Fix rel path setup
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))    # Absolute path to src/
+BASE_DIR = os.path.dirname(SRC_DIR)                     # Absolute path to main/
 
-# Init a logger
-logger:logging.Logger = setup_logger('../logs/flask.log', 'flask_logger')
+# Init and read config
+config:ConfigParser = ConfigParser() 
+config.read(os.path.join(BASE_DIR, 'config.conf'))
+
+# Build paths
+LOGS_DIR:str = os.path.join(BASE_DIR, config["paths"]["LOGS_DIR"])   # Path to the directory containing log files
+DATA_DIR:str = os.path.join(BASE_DIR, config["paths"]["DATA_DIR"])   # Path to the directory containing all the data and database file
+
+# Create paths from bases in config 
+FLASK_LOG_FILE:str = os.path.join(LOGS_DIR, 'flask.log')  # Path to the output log file for the flask app
+DB_FILE:str = config['paths']['DATABASE_FILEPATH']               # Path to the database file 
+
+# Extract other vars from config for easier reference
+CORS_ORIGIN:str = config['api']['CORS_ORIGIN']
+RESET_LOGS:bool = config.getboolean('api', 'RESET_LOGS')
+
+
+# ---- SETUP/INIT ---- # 
+
+# Reset the logs dir if configured 
+# NOTE: reset logs before init logger so that the log file is not locked
+if RESET_LOGS: 
+    for filename in os.listdir(LOGS_DIR): 
+        if filename.endswith('.log'): os.remove(os.path.join(LOGS_DIR, filename))
+
+# Setup the logger 
+logger:logging.Logger = setup_logger(FLASK_LOG_FILE, config['logging']['FLASK_LOGGER_NAME'])
+
+# Log if we reset the logs or not 
+if RESET_LOGS: logger.debug('Reset all API logs.')
+else: logger.debug('Keeping previous API logs.')
 
 # Init the flask app
-logger.debug('Initializing flask app.')
-
-app = Flask(__name__)
-compress = Compress()
-compress.init_app(app)
-
-# Init CORS 
-logger.debug('Configuring CORS.')
-CORS(
-    app, 
-    origins='127.0.0.1',
-    allow_headers=['Content-Type'],
-    supports_credentials=True
-)  
-
-# Define the headers for the response that are the same no matter what the response is 
-response_headers:dict[str, str] = {
-    'Access-Control-Allow-Origin': '127.0.0.1',
-    'Access-Control-Allow-Credentials': 'true',
-    'Access-Control-Allow-Headers': 'Content-Type'
-}
+app:Flask = create_app(logger, CORS_ORIGIN) 
 
 # Add DB connector to app for persistent access across blueprints
 app.db_connector = ResDBConnector(DB_FILE)
 
-# Logging and init db cxn before requests
-@app.before_request
-def before_request():
 
-    # Log incomming request
-    try: 
-        logger.info(f"\n\033[92mINCOMING request: METHOD = {request.method}, PATH = {request.path}")
-        logger.debug(f'Headers: {request.headers()}')
-        
-        # Log body or params based on req type
-        match(request.method): 
-            case 'POST': 
-                logger.info(f'Request body: {request.get_json()}')
-            case 'GET': 
-                logger.info(f'Request args: {request.args}')
-            case _: 
-                pass
-    except Exception as e: 
-        logger.error('Error from incoming connection.', exc_info=e)
-
-# Logging for after requests and adding CORs headers
-@app.after_request
-def after_request(response):
-    #response.set_cookie('session', value=session['authenticated'], samesite='None', secure=False)
-    for k,v in response_headers.items(): response.headers[k] = v
-    
-    print(f"\n\033[94mOUTGOING response: \n\n\t\033[0m{request.method} {request.path}\n\tAuthenticated: {session.get('authenticated')}\n")
-    print(response.headers)
-
-    return response 
-
-
-# -- Endpoints -- #
-print(f'\033[0m[{now()}] \033[94mRegistering endpoints\033[0m')
-
-app.register_blueprint(homepage_bp)
+# ---- REGISTER BLUEPRINTS ---- #
+logger.info(f'Registering endpoints')
 app.register_blueprint(data_bp)
-app.register_blueprint(authentication_bp)
 
 
-# -- Debug print -- #
-print(f'\033[0m[{now()}] \033[92mFlask app running.\033[0m')
+# ---- DONE ---- # 
+logger.debug('Flask app running!')
+print(f'\033[92mFlask app running.\033[0m')
 
 
-# -- Run -- #
+# ---- RUN ---- #
 if __name__ == '__main__':
-    http_server = WSGIServer(('0.0.0.0', config['backend-port']), app)
-    http_server.serve_forever()
+    try: 
+        http_server = WSGIServer(('0.0.0.0', config.getint('api', 'BACKEND_PORT')), app)
+        http_server.serve_forever()
+    except Exception as e: 
+        logger.critical('Flask app failed to start.', e, exc_info=True)
