@@ -1,0 +1,62 @@
+
+/* ---- APP BASE STYLES ---- */
+:root { 
+    --nav-height: 5vh;
+    --nav-text-color: var(--color-text-secondary);
+}  
+
+.app { 
+    width: 100vw;
+    height: 100vh;
+    display: grid;
+    grid-template-areas: 
+        'nav'
+        'page';
+    grid-template-columns: 100vw;                   /* One column */
+    grid-template-rows: var(--nav-height), auto;    /* Two rows (nav, page) */
+    background-color: var(--color-bg);
+}
+
+/* ---- NAVIGATION BAR ---- */
+nav { 
+    grid-area: nav;
+    display: flex;
+    flex-direction: row;
+    width: 100vw;
+    height: var(--nav-height);
+    font-family: var(--primary-font);
+    background-color: var(--color-surface);
+}
+
+.nav-link { 
+    display: flex;
+    width: 10rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
+    align-items: center;
+    justify-content: center;
+    color: var(--nav-text-color);
+    border-right: 1px solid var(--color-border);
+    margin-right: 1vw;
+}
+
+.nav-toggle-theme { 
+    display: flex;
+    margin-left: auto;
+    margin-right: 1rem;
+    height: var(--nav-height);
+    width: var(--nav-height);
+}
+
+.theme-button { 
+    width: 70%;
+    height: 70%;
+    color: var(--nav-text-color);
+    margin: auto;
+}
+
+/* ---- PAGE CONTAINER ---- */
+.page { 
+    grid-area: page;
+    height: calc(100vh - var(--nav-height));
+}
